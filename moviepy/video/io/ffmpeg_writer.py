@@ -5,6 +5,8 @@ out of VideoClips
 
 import subprocess as sp
 
+import threading
+import queue
 import numpy as np
 from proglog import proglog
 
@@ -221,7 +223,6 @@ class FFMPEG_VideoWriter:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
-
 def ffmpeg_write_video(
     clip,
     filename,
@@ -236,18 +237,14 @@ def ffmpeg_write_video(
     logger="bar",
     pixel_format=None,
 ):
-    """Write the clip to a videofile. See VideoClip.write_videofile for details
-    on the parameters.
-    """
+    """Write the clip to a videofile with multi-threaded frame processing."""
     logger = proglog.default_bar_logger(logger)
-
     if write_logfile:
         logfile = open(filename + ".log", "w+")
     else:
         logfile = None
 
     logger(message="MoviePy - Writing video %s\n" % filename)
-
     has_mask = clip.mask is not None
 
     with FFMPEG_VideoWriter(
@@ -264,20 +261,126 @@ def ffmpeg_write_video(
         ffmpeg_params=ffmpeg_params,
         pixel_format=pixel_format,
     ) as writer:
-        for t, frame in clip.iter_frames(
-            logger=logger, with_times=True, fps=fps, dtype="uint8"
-        ):
-            if clip.mask is not None:
-                mask = 255 * clip.mask.get_frame(t)
-                if mask.dtype != "uint8":
-                    mask = mask.astype("uint8")
-                frame = np.dstack([frame, mask])
 
-            writer.write_frame(frame)
+        MUTI_THREAD_COUNT = threads if threads is not None else 16
+        input_queue = queue.Queue(maxsize=2 * MUTI_THREAD_COUNT)
+        output_queue = queue.Queue()
+        stop_event = threading.Event()
+
+        def worker():
+            while not stop_event.is_set():
+                try:
+                    n, t, frame = input_queue.get(timeout=0.1)
+                    if clip.mask is not None:
+                        mask = 255 * clip.mask.get_frame(t)
+                        mask = mask.astype("uint8") if mask.dtype != "uint8" else mask
+                        frame = np.dstack([frame, mask])
+                    output_queue.put((n, frame))
+                    input_queue.task_done()
+                except queue.Empty:
+                    continue
+
+        threads = []
+        for _ in range(MUTI_THREAD_COUNT):
+            t = threading.Thread(target=worker)
+            t.start()
+            threads.append(t)
+
+        buffer = {}
+        current_n = 0
+        write_thread = threading.Thread(target=lambda: None)
+        write_thread_running = True
+
+        def write_thread_func():
+            nonlocal current_n
+            while write_thread_running or not output_queue.empty() or buffer:
+                try:
+                    n, frame = output_queue.get(timeout=0.1)
+                    buffer[n] = frame
+                    while current_n in buffer:
+                        writer.write_frame(buffer[current_n])
+                        del buffer[current_n]
+                        current_n += 1
+                    output_queue.task_done()
+                except queue.Empty:
+                    continue
+
+        write_thread = threading.Thread(target=write_thread_func)
+        write_thread.start()
+
+        try:
+            for n, (t, frame) in enumerate(clip.iter_frames(
+                logger=logger, with_times=True, fps=fps, dtype="uint8"
+            )):
+                input_queue.put((n, t, frame))
+        finally:
+            input_queue.join()
+            stop_event.set()
+            for t in threads:
+                t.join()
+            write_thread_running = False
+            write_thread.join()
 
     if write_logfile:
         logfile.close()
     logger(message="MoviePy - Done !")
+
+# def ffmpeg_write_video(
+#     clip,
+#     filename,
+#     fps,
+#     codec="libx264",
+#     bitrate=None,
+#     preset="medium",
+#     write_logfile=False,
+#     audiofile=None,
+#     threads=None,
+#     ffmpeg_params=None,
+#     logger="bar",
+#     pixel_format=None,
+# ):
+#     """Write the clip to a videofile. See VideoClip.write_videofile for details
+#     on the parameters.
+#     """
+#     logger = proglog.default_bar_logger(logger)
+
+#     if write_logfile:
+#         logfile = open(filename + ".log", "w+")
+#     else:
+#         logfile = None
+
+#     logger(message="MoviePy - Writing video %s\n" % filename)
+
+#     has_mask = clip.mask is not None
+
+#     with FFMPEG_VideoWriter(
+#         filename,
+#         clip.size,
+#         fps,
+#         codec=codec,
+#         preset=preset,
+#         bitrate=bitrate,
+#         with_mask=has_mask,
+#         logfile=logfile,
+#         audiofile=audiofile,
+#         threads=threads,
+#         ffmpeg_params=ffmpeg_params,
+#         pixel_format=pixel_format,
+#     ) as writer:
+#         for t, frame in clip.iter_frames(
+#             logger=logger, with_times=True, fps=fps, dtype="uint8"
+#         ):
+#             if clip.mask is not None:
+#                 mask = 255 * clip.mask.get_frame(t)
+#                 if mask.dtype != "uint8":
+#                     mask = mask.astype("uint8")
+#                 frame = np.dstack([frame, mask])
+
+#             writer.write_frame(frame)
+
+#     if write_logfile:
+#         logfile.close()
+#     logger(message="MoviePy - Done !")
 
 
 def ffmpeg_write_image(filename, image, logfile=False, pixel_format=None):

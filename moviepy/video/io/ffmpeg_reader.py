@@ -114,7 +114,7 @@ class FFMPEG_VideoReader:
             elif codec_name == "vp8":
                 i_arg = ["-c:v", "libvpx"] + i_arg
 
-        print(self.infos)
+        # print(self.infos)
 
         cmd = (
             [FFMPEG_BINARY]
@@ -136,7 +136,7 @@ class FFMPEG_VideoReader:
             ]
         )
 
-        print(" ".join(cmd))
+        # print(" ".join(cmd))
 
         popen_params = cross_platform_popen_params(
             {
