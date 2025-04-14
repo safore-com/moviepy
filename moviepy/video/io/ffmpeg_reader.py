@@ -232,8 +232,8 @@ class FFMPEG_VideoReader:
         pos = self.get_frame_number(t) + 1
 
         # Initialize proc if it is not open
-        if not self.proc:
-            print("Proc not detected")
+        if not self.proc or self.proc.stdout.closed:
+            # print("Proc not detected")
             self.initialize(t)
             return self.last_read
 
