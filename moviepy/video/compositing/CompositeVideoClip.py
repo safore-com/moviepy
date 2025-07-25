@@ -138,6 +138,8 @@ class CompositeVideoClip(VideoClip):
 
             return mask
 
+        if len(self.clips) == 1:
+            return self.clips[0].get_frame(t)
         # Try doing clip merging with pillow
         bg_t = t - self.bg.start
         bg_frame = self.bg.get_frame(bg_t).astype("uint8")
